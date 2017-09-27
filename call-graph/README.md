@@ -24,6 +24,6 @@ It can be visualized using the tools like http://www.graphviz.org/ or can be con
 $ dot -Tpng /tmp/call-graph.dot > call-graph.png
 ```
 
-[![Example](callgraph-oss.jpg)](callgraph-oss.jpg)
+[![Example](../callgraph-oss.jpg)](../callgraph-oss.jpg)
 
 Arrows represent calls (between methods), labels (numbers) next to arrows stand for number of occurrences.
