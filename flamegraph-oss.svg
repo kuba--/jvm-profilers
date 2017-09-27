@@ -1,0 +1,963 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="726" onload="init(evt)" viewBox="0 0 1200 726" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		if (func != null)
+			func = func.replace(/ .*/, "");
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*10*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="726.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="20" font-size="10" font-family="Verdana" fill="rgb(0,0,0)">OSS-UPLOAD Java(green); C++(yellow); system(red)</text>
+<text text-anchor="" x="10.00" y="711" font-size="10" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="20" font-size="10" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="20" font-size="10" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="711" font-size="10" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeCache::next_nmethod (1 samples, 5.56%)</title><rect x="731.1" y="521" width="65.6" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text text-anchor="" x="734.11" y="531.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >CodeCache..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::try_inline (1 samples, 5.56%)</title><rect x="600.0" y="297" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="307.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>resource_allocate_bytes (1 samples, 5.56%)</title><rect x="600.0" y="201" width="65.6" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="211.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >resource_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IR::IR (1 samples, 5.56%)</title><rect x="600.0" y="473" width="65.6" height="15.0" fill="rgb(210,210,62)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >IR::IR</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaThread::nmethods_do (3 samples, 16.67%)</title><rect x="993.3" y="521" width="196.7" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="531.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >JavaThread::nmethods_do</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>akka/dispatch/BatchingExecutor$Batch:.run (2 samples, 11.11%)</title><rect x="862.2" y="441" width="131.1" height="15.0" fill="rgb(75,223,75)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="451.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >akka/dispatch/Batchi..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.internalDecomposeWithBuilder (1 samples, 5.56%)</title><rect x="862.2" y="233" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="243.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::try_inline_full (1 samples, 5.56%)</title><rect x="600.0" y="281" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="291.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="313" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="323.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/channel/SimpleChannelUpstreamHandler:.handleUpstream (1 samples, 5.56%)</title><rect x="796.7" y="185" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="195.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Matcher::xform (1 samples, 5.56%)</title><rect x="468.9" y="489" width="65.5" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="499.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Matcher::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>java_start (16 samples, 88.89%)</title><rect x="141.1" y="633" width="1048.9" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text text-anchor="" x="144.11" y="643.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >java_start</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/channel/DefaultChannelPipeline$DefaultChannelHandlerContext:.sendUpstream (1 samples, 5.56%)</title><rect x="796.7" y="201" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="211.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>scala/concurrent/forkjoin/ForkJoinPool$WorkQueue:.runTask (2 samples, 11.11%)</title><rect x="862.2" y="473" width="131.1" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >scala/concurrent/for..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PhaseIterGVN::transform_old (1 samples, 5.56%)</title><rect x="534.4" y="473" width="65.6" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text text-anchor="" x="537.44" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >PhaseIter..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::try_inline_full (1 samples, 5.56%)</title><rect x="600.0" y="361" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="371.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>TypeInstPtr::add_offset (1 samples, 5.56%)</title><rect x="468.9" y="425" width="65.5" height="15.0" fill="rgb(219,219,66)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="435.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >TypeInstP..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>scala/collection/AbstractTraversable:.foldLeft (1 samples, 5.56%)</title><rect x="927.8" y="201" width="65.5" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="211.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >scala/col..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeCache::find_blob (1 samples, 5.56%)</title><rect x="1058.9" y="473" width="65.5" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text text-anchor="" x="1061.89" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >CodeCache..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NMethodSweeper::possibly_sweep (1 samples, 5.56%)</title><rect x="731.1" y="553" width="65.6" height="15.0" fill="rgb(210,210,63)" rx="2" ry="2" />
+<text text-anchor="" x="734.11" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >NMethodSw..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/channel/socket/nio/NioWorker:.read (1 samples, 5.56%)</title><rect x="796.7" y="361" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="371.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/handler/codec/replay/ReplayingDecoder:.messageReceived (1 samples, 5.56%)</title><rect x="796.7" y="249" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="259.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::begin (3 samples, 16.67%)</title><rect x="993.3" y="585" width="196.7" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="595.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >SafepointSynchronize::begin</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>scala/concurrent/forkjoin/ForkJoinPool:.runWorker (2 samples, 11.11%)</title><rect x="862.2" y="489" width="131.1" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="499.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >scala/concurrent/for..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HealthController$$anonfun$report$1$$anonfun$apply$1:.apply (1 samples, 5.56%)</title><rect x="927.8" y="345" width="65.5" height="15.0" fill="rgb(89,235,89)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="355.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >com/autod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/channel/socket/nio/AbstractNioWorker:.process (1 samples, 5.56%)</title><rect x="796.7" y="377" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="387.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="169" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="179.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compile::Optimize (1 samples, 5.56%)</title><rect x="534.4" y="521" width="65.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="537.44" y="531.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compile::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.decomposeObject$1 (1 samples, 5.56%)</title><rect x="927.8" y="297" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="307.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::lock_without_safepoint_check (2 samples, 11.11%)</title><rect x="337.8" y="553" width="131.1" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="340.78" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Monitor::lock_withou..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_stub (3 samples, 16.67%)</title><rect x="796.7" y="521" width="196.6" height="15.0" fill="rgb(226,89,89)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="531.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >call_stub</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="217" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="227.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="89" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="99.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="425" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="435.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_readv_writev (1 samples, 5.56%)</title><rect x="10.0" y="585" width="65.6" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="595.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >do_readv_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compile::Compile (2 samples, 11.11%)</title><rect x="468.9" y="537" width="131.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="547.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compile::Compile</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_getspecific (1 samples, 5.56%)</title><rect x="468.9" y="393" width="65.5" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="403.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >pthread_g..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>RegionNode::Ideal (1 samples, 5.56%)</title><rect x="534.4" y="457" width="65.6" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="537.44" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >RegionNod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Threads::nmethods_do (3 samples, 16.67%)</title><rect x="993.3" y="537" width="196.7" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="547.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Threads::nmethods_do</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>frame::sender (3 samples, 16.67%)</title><rect x="993.3" y="505" width="196.7" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="515.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >frame::sender</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/CustomSerializer:.serialize (1 samples, 5.56%)</title><rect x="862.2" y="137" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="147.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::try_inline (1 samples, 5.56%)</title><rect x="600.0" y="377" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="387.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_thread (16 samples, 88.89%)</title><rect x="141.1" y="649" width="1048.9" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text text-anchor="" x="144.11" y="659.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >start_thread</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Matcher::match (1 samples, 5.56%)</title><rect x="468.9" y="505" width="65.5" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="515.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Matcher::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>scala/concurrent/Future$$anonfun$map$1:.apply (2 samples, 11.11%)</title><rect x="862.2" y="393" width="131.1" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="403.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >scala/concurrent/Fut..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::compile_java_method (2 samples, 11.11%)</title><rect x="600.0" y="505" width="131.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="515.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compilation::compile..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="25" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="35.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.decomposeObject$1 (1 samples, 5.56%)</title><rect x="862.2" y="217" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="227.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tcp_sendmsg (1 samples, 5.56%)</title><rect x="10.0" y="553" width="65.6" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >tcp_sendmsg</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::iterate_bytecodes_for_block (1 samples, 5.56%)</title><rect x="600.0" y="249" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="259.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="441" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="451.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Matcher::match_tree (1 samples, 5.56%)</title><rect x="468.9" y="473" width="65.5" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Matcher::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>java (18 samples, 100.00%)</title><rect x="10.0" y="665" width="1180.0" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="675.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >java</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>VMThread::loop (3 samples, 16.67%)</title><rect x="993.3" y="601" width="196.7" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="611.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >VMThread::loop</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.internalDecomposeWithBuilder (1 samples, 5.56%)</title><rect x="862.2" y="281" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="291.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>C2Compiler::compile_method (2 samples, 11.11%)</title><rect x="468.9" y="553" width="131.1" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >C2Compiler::compile_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>G1CollectorPolicy::update_incremental_cset_info (1 samples, 5.56%)</title><rect x="272.2" y="553" width="65.6" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text text-anchor="" x="275.22" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >G1Collect..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="121" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="131.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.addField$1 (1 samples, 5.56%)</title><rect x="862.2" y="249" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="259.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.decompose (1 samples, 5.56%)</title><rect x="862.2" y="297" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="307.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.addField$1 (1 samples, 5.56%)</title><rect x="862.2" y="201" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="211.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_virtual (3 samples, 16.67%)</title><rect x="796.7" y="569" width="196.6" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="579.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >JavaCalls::call_virtual</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_free (1 samples, 5.56%)</title><rect x="75.6" y="649" width="65.5" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text text-anchor="" x="78.56" y="659.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >_int_free</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="409" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="419.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="489" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="499.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_helper (3 samples, 16.67%)</title><rect x="796.7" y="537" width="196.6" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="547.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >JavaCalls::call_helper</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SQSProducer:.sendJson (1 samples, 5.56%)</title><rect x="862.2" y="313" width="65.6" height="15.0" fill="rgb(89,235,89)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="323.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >com/autod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SafepointSynchronize::do_cleanup_tasks (3 samples, 16.67%)</title><rect x="993.3" y="569" width="196.7" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="579.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >SafepointSynchronize::do_cleanu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vfs_writev (1 samples, 5.56%)</title><rect x="10.0" y="601" width="65.6" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="611.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >vfs_writev</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>scala/util/Success:.map (2 samples, 11.11%)</title><rect x="862.2" y="377" width="131.1" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="387.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >scala/util/Success:...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="41" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="51.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.internalDecomposeWithBuilder (1 samples, 5.56%)</title><rect x="862.2" y="185" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="195.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HealthController$$anonfun$report$1$$anonfun$apply$1:.apply (1 samples, 5.56%)</title><rect x="927.8" y="361" width="65.5" height="15.0" fill="rgb(89,235,89)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="371.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >com/autod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Node_List::push (1 samples, 5.56%)</title><rect x="534.4" y="425" width="65.6" height="15.0" fill="rgb(210,210,62)" rx="2" ry="2" />
+<text text-anchor="" x="537.44" y="435.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Node_List..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>OopMapSet::update_register_map (1 samples, 5.56%)</title><rect x="1124.4" y="473" width="65.6" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text text-anchor="" x="1127.44" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >OopMapSet..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinearScan::do_linear_scan (1 samples, 5.56%)</title><rect x="665.6" y="473" width="65.5" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text text-anchor="" x="668.56" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >LinearSca..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="105" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="115.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::iterate_all_blocks (1 samples, 5.56%)</title><rect x="600.0" y="425" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="435.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="329" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="339.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>akka/dispatch/ForkJoinExecutorConfigurator$AkkaForkJoinTask:.exec (2 samples, 11.11%)</title><rect x="862.2" y="457" width="131.1" height="15.0" fill="rgb(75,223,75)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >akka/dispatch/ForkJo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="281" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="291.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Formats$$anon$3:.customSerializer (1 samples, 5.56%)</title><rect x="862.2" y="169" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="179.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaThread::thread_main_inner (8 samples, 44.44%)</title><rect x="468.9" y="601" width="524.4" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="611.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >JavaThread::thread_main_inner</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>TypeInstPtr::make (1 samples, 5.56%)</title><rect x="468.9" y="409" width="65.5" height="15.0" fill="rgb(219,219,66)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="419.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >TypeInstP..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>akka/dispatch/BatchingExecutor$Batch$$anonfun$run$1:.apply$mcV$sp (2 samples, 11.11%)</title><rect x="862.2" y="409" width="131.1" height="15.0" fill="rgb(75,223,75)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="419.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >akka/dispatch/Batchi..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="457" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_writev (1 samples, 5.56%)</title><rect x="10.0" y="617" width="65.6" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="627.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >sys_writev</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Monitor::ILock (2 samples, 11.11%)</title><rect x="337.8" y="537" width="131.1" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="340.78" y="547.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Monitor::ILock</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PhaseIdealLoop::build_and_optimize (1 samples, 5.56%)</title><rect x="534.4" y="505" width="65.6" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text text-anchor="" x="537.44" y="515.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >PhaseIdea..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>system_call_fastpath (1 samples, 5.56%)</title><rect x="10.0" y="633" width="65.6" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="643.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >system_ca..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::iterate_bytecodes_for_block (1 samples, 5.56%)</title><rect x="600.0" y="329" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="339.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.decompose (1 samples, 5.56%)</title><rect x="927.8" y="329" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="339.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaCalls::call_virtual (3 samples, 16.67%)</title><rect x="796.7" y="553" width="196.6" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >JavaCalls::call_virtual</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="73" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="83.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::iterate_bytecodes_for_block (1 samples, 5.56%)</title><rect x="600.0" y="409" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="419.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>YoungList::rs_length_sampling_next (5 samples, 27.78%)</title><rect x="141.1" y="569" width="327.8" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text text-anchor="" x="144.11" y="579.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >YoungList::rs_length_sampling_next</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::invoke (1 samples, 5.56%)</title><rect x="600.0" y="393" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="403.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::GraphBuilder (1 samples, 5.56%)</title><rect x="600.0" y="441" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="451.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__libc_writev (1 samples, 5.56%)</title><rect x="10.0" y="649" width="65.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="659.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >__libc_wr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>UploadController$$anonfun$2:.apply (1 samples, 5.56%)</title><rect x="862.2" y="345" width="65.6" height="15.0" fill="rgb(89,235,89)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="355.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >com/autod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompileBroker::invoke_compiler_on_method (4 samples, 22.22%)</title><rect x="468.9" y="569" width="262.2" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="579.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >CompileBroker::invoke_compiler_on_method</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/channel/SimpleChannelUpstreamHandler:.handleUpstream (1 samples, 5.56%)</title><rect x="796.7" y="345" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="355.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (18 samples, 100%)</title><rect x="10.0" y="681" width="1180.0" height="15.0" fill="rgb(255,130,130)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="691.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeHeap::next_free (1 samples, 5.56%)</title><rect x="731.1" y="505" width="65.6" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text text-anchor="" x="734.11" y="515.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >CodeHeap:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>scala/concurrent/BlockContext$:.withBlockContext (2 samples, 11.11%)</title><rect x="862.2" y="425" width="131.1" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="435.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >scala/concurrent/Blo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>LinearScan::build_intervals (1 samples, 5.56%)</title><rect x="665.6" y="457" width="65.5" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text text-anchor="" x="668.56" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >LinearSca..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>JavaThread::run (8 samples, 44.44%)</title><rect x="468.9" y="617" width="524.4" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="627.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >JavaThread::run</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>frame::sender_for_compiled_frame (3 samples, 16.67%)</title><rect x="993.3" y="489" width="196.7" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="499.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >frame::sender_for_compiled_frame</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ConcurrentG1RefineThread::run_young_rs_sampling (5 samples, 27.78%)</title><rect x="141.1" y="601" width="327.8" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="144.11" y="611.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >ConcurrentG1RefineThread::run_young_rs_sampling</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Formats$$anonfun$customSerializer$1:.apply (1 samples, 5.56%)</title><rect x="862.2" y="153" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="163.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.internalDecomposeWithBuilder (1 samples, 5.56%)</title><rect x="927.8" y="249" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="259.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NMethodSweeper::sweep_code_cache (1 samples, 5.56%)</title><rect x="731.1" y="537" width="65.6" height="15.0" fill="rgb(210,210,63)" rx="2" ry="2" />
+<text text-anchor="" x="734.11" y="547.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >NMethodSw..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/handler/codec/replay/ReplayingDecoder:.callDecode (1 samples, 5.56%)</title><rect x="796.7" y="233" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="243.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompileQueue::get (1 samples, 5.56%)</title><rect x="731.1" y="569" width="65.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="734.11" y="579.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >CompileQu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ConcurrentG1RefineThread::sample_young_list_rs_lengths (5 samples, 27.78%)</title><rect x="141.1" y="585" width="327.8" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="144.11" y="595.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >ConcurrentG1RefineThread::sample_young_list_rs_lengths</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::compile_method (2 samples, 11.11%)</title><rect x="600.0" y="521" width="131.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="531.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compilation::compile..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.internalDecomposeWithBuilder (1 samples, 5.56%)</title><rect x="927.8" y="265" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="275.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CodeHeap::find_start (1 samples, 5.56%)</title><rect x="1058.9" y="457" width="65.5" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text text-anchor="" x="1061.89" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >CodeHeap:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::iterate_all_blocks (1 samples, 5.56%)</title><rect x="600.0" y="265" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="275.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>G1CollectorPolicy::predict_region_elapsed_time_ms (1 samples, 5.56%)</title><rect x="272.2" y="537" width="65.6" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text text-anchor="" x="275.22" y="547.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >G1Collect..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compile::Code_Gen (1 samples, 5.56%)</title><rect x="468.9" y="521" width="65.5" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="531.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compile::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::invoke (1 samples, 5.56%)</title><rect x="600.0" y="313" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="323.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/channel/SimpleChannelUpstreamHandler:.handleUpstream (1 samples, 5.56%)</title><rect x="796.7" y="265" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="275.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::emit_lir (1 samples, 5.56%)</title><rect x="665.6" y="489" width="65.5" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="668.56" y="499.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compilati..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="137" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="147.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>thread_entry (3 samples, 16.67%)</title><rect x="796.7" y="585" width="196.6" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="595.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >thread_entry</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::build_hir (1 samples, 5.56%)</title><rect x="600.0" y="489" width="65.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="499.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compilati..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ValueStack::ValueStack (1 samples, 5.56%)</title><rect x="600.0" y="217" width="65.6" height="15.0" fill="rgb(207,207,61)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="227.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >ValueStac..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="153" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="163.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>UploadController$$anonfun$2:.apply (1 samples, 5.56%)</title><rect x="862.2" y="361" width="65.6" height="15.0" fill="rgb(89,235,89)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="371.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >com/autod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.decomposeObject$1 (1 samples, 5.56%)</title><rect x="927.8" y="233" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="243.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::iterate_all_blocks (1 samples, 5.56%)</title><rect x="600.0" y="345" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="355.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>NMethodSweeper::mark_active_nmethods (3 samples, 16.67%)</title><rect x="993.3" y="553" width="196.7" height="15.0" fill="rgb(210,210,63)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >NMethodSweeper::mark_active_nme..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PhiNode::is_unsafe_data_reference (1 samples, 5.56%)</title><rect x="534.4" y="441" width="65.6" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text text-anchor="" x="537.44" y="451.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >PhiNode::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompressedReadStream::read_int_mb (1 samples, 5.56%)</title><rect x="1124.4" y="457" width="65.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="1127.44" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compresse..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/channel/socket/nio/AbstractNioSelector:.run (1 samples, 5.56%)</title><rect x="796.7" y="393" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="403.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_sync_readv_writev (1 samples, 5.56%)</title><rect x="10.0" y="569" width="65.6" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="579.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >do_sync_r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Matcher::Label_Root (1 samples, 5.56%)</title><rect x="468.9" y="457" width="65.5" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Matcher::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.addField$1 (1 samples, 5.56%)</title><rect x="927.8" y="281" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="291.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PhaseIterGVN::optimize (1 samples, 5.56%)</title><rect x="534.4" y="489" width="65.6" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text text-anchor="" x="537.44" y="499.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >PhaseIter..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="57" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="67.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IRScope::IRScope (1 samples, 5.56%)</title><rect x="600.0" y="457" width="65.6" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="467.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >IRScope::..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.decomposeObject$1 (1 samples, 5.56%)</title><rect x="862.2" y="265" width="65.6" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="275.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>AddPNode::bottom_type (1 samples, 5.56%)</title><rect x="468.9" y="441" width="65.5" height="15.0" fill="rgb(216,216,64)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="451.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >AddPNode:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.addField$1 (1 samples, 5.56%)</title><rect x="927.8" y="217" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="227.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (1 samples, 5.56%)</title><rect x="796.7" y="473" width="65.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="483.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/json4s/Extraction$:.internalDecomposeWithBuilder (1 samples, 5.56%)</title><rect x="927.8" y="313" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="930.78" y="323.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/json4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compilation::Compilation (2 samples, 11.11%)</title><rect x="600.0" y="537" width="131.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="547.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compilation::Compila..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Interpreter (3 samples, 16.67%)</title><rect x="796.7" y="505" width="196.6" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="515.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Interpreter</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>GraphBuilder::method_return (1 samples, 5.56%)</title><rect x="600.0" y="233" width="65.6" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="243.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >GraphBuil..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>UploadController:.sendMessageToProducer (1 samples, 5.56%)</title><rect x="862.2" y="329" width="65.6" height="15.0" fill="rgb(89,235,89)" rx="2" ry="2" />
+<text text-anchor="" x="865.22" y="339.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >com/autod..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CompileBroker::compiler_thread_loop (5 samples, 27.78%)</title><rect x="468.9" y="585" width="327.8" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="471.89" y="595.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >CompileBroker::compiler_thread_loop</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>Compiler::compile_method (2 samples, 11.11%)</title><rect x="600.0" y="553" width="131.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="563.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >Compiler::compile_me..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>VMThread::run (3 samples, 16.67%)</title><rect x="993.3" y="617" width="196.7" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text text-anchor="" x="996.33" y="627.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >VMThread::run</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ConcurrentG1RefineThread::run (5 samples, 27.78%)</title><rect x="141.1" y="617" width="327.8" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text text-anchor="" x="144.11" y="627.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >ConcurrentG1RefineThread::run</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>org/jboss/netty/handler/codec/frame/FrameDecoder:.unfoldAndFireMessageReceived (1 samples, 5.56%)</title><rect x="796.7" y="297" width="65.5" height="15.0" fill="rgb(96,242,96)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="307.5" font-size="10" font-family="Verdana" fill="rgb(0,0,0)"  >org/jboss..</text>
+</g>
+</svg>
