@@ -3,7 +3,7 @@
 Main Website: http://www.brendangregg.com/flamegraphs.html
 
 Example (click to zoom):
-[![Example](http://brendangregg.github.io/FlameGraph/cpu-bash-flamegraph.svg)](http://brendangregg.github.io/FlameGraph/cpu-bash-flamegraph.svg)
+[![Example](http://www.brendangregg.com/FlameGraphs/cpu-bash-flamegraph.svg)](http://www.brendangregg.com/FlameGraphs/cpu-bash-flamegraph.svg)
 
 Other sites:
 - CPU profiling using Linux perf_events, DTrace, SystemTap, or ktap: http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html
